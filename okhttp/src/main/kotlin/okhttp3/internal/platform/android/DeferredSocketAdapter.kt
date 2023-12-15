@@ -15,7 +15,9 @@
  */
 package okhttp3.internal.platform.android
 
+import java.util.concurrent.locks.ReentrantLock
 import javax.net.ssl.SSLSocket
+import kotlin.concurrent.withLock
 import okhttp3.Protocol
 
 /**
@@ -28,6 +30,7 @@ import okhttp3.Protocol
  */
 class DeferredSocketAdapter(private val socketAdapterFactory: Factory) : SocketAdapter {
   private var delegate: SocketAdapter? = null
+  private val lock = ReentrantLock()
 
   override fun isSupported(): Boolean {
     return true
@@ -47,7 +50,7 @@ class DeferredSocketAdapter(private val socketAdapterFactory: Factory) : SocketA
     return getDelegate(sslSocket)?.getSelectedProtocol(sslSocket)
   }
 
-  @Synchronized private fun getDelegate(sslSocket: SSLSocket): SocketAdapter? {
+  private fun getDelegate(sslSocket: SSLSocket): SocketAdapter? = lock.withLock {
     if (this.delegate == null && socketAdapterFactory.matchesSocket(sslSocket)) {
       this.delegate = socketAdapterFactory.create(sslSocket)
     }

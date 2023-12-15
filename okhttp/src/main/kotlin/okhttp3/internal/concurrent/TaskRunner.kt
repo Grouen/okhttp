@@ -363,6 +363,16 @@ class TaskRunner(
     val logger: Logger = Logger.getLogger(TaskRunner::class.java.name)
 
     @JvmField
-    val INSTANCE = TaskRunner(RealBackend(threadFactory("$okHttpName TaskRunner", daemon = true)))
+    val INSTANCE = TaskRunner(RealBackend(run {
+      val feature = Runtime.version().feature()
+      if (feature >= 21) {
+        val builder = Thread::class.java.getMethod("ofVirtual").invoke(null)
+        val namedBuilder = builder.javaClass.interfaces.first().methods.first { it.name == "name" && it.parameterCount == 2 }.invoke(builder, "$okHttpName TaskRunner-", 0)
+        val threadFactory = namedBuilder.javaClass.interfaces.first().methods.first { it.name == "factory" }.invoke(namedBuilder) as ThreadFactory
+        threadFactory
+      } else {
+        threadFactory("$okHttpName TaskRunner", daemon = true)
+      }
+    }))
   }
 }

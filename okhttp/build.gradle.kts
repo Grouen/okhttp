@@ -150,3 +150,7 @@ dependencies {
 mavenPublishing {
   configure(KotlinJvm(javadocJar = JavadocJar.Empty()))
 }
+
+tasks.getByName("assemble") {
+  dependsOn("jar", "kotlinSourcesJar")
+}

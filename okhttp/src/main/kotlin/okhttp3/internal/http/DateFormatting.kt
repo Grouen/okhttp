@@ -20,6 +20,8 @@ import java.text.ParsePosition
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import okhttp3.internal.UTC
 
 /** The last four-digit year: "Fri, 31 Dec 9999 23:59:59 GMT". */
@@ -68,6 +70,7 @@ private val BROWSER_COMPATIBLE_DATE_FORMAT_STRINGS =
 
 private val BROWSER_COMPATIBLE_DATE_FORMATS =
   arrayOfNulls<DateFormat>(BROWSER_COMPATIBLE_DATE_FORMAT_STRINGS.size)
+private val BROWSER_COMPATIBLE_DATE_FORMAT_STRINGS_LOCK = ReentrantLock()
 
 /** Returns the date for this string, or null if the value couldn't be parsed. */
 fun String.toHttpDateOrNull(): Date? {
@@ -80,7 +83,7 @@ fun String.toHttpDateOrNull(): Date? {
     // non-standard trailing "+01:00". Those cases are covered below.
     return result
   }
-  synchronized(BROWSER_COMPATIBLE_DATE_FORMAT_STRINGS) {
+  BROWSER_COMPATIBLE_DATE_FORMAT_STRINGS_LOCK.withLock {
     for (i in 0 until BROWSER_COMPATIBLE_DATE_FORMAT_STRINGS.size) {
       var format: DateFormat? = BROWSER_COMPATIBLE_DATE_FORMATS[i]
       if (format == null) {

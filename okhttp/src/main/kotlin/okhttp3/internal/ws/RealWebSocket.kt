@@ -15,6 +15,7 @@
  */
 package okhttp3.internal.ws
 
+import okhttp3.*
 import java.io.Closeable
 import java.io.IOException
 import java.net.ProtocolException
@@ -23,15 +24,8 @@ import java.util.ArrayDeque
 import java.util.Random
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeUnit.MILLISECONDS
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.EventListener
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import okhttp3.internal.assertThreadHoldsLock
 import okhttp3.internal.closeQuietly
 import okhttp3.internal.concurrent.Task
@@ -124,6 +118,8 @@ class RealWebSocket(
   /** True if we have sent a ping that is still awaiting a reply. */
   private var awaitingPong = false
 
+  private val lock = ReentrantLock()
+
   init {
     require("GET" == originalRequest.method) {
       "Request must be GET: ${originalRequest.method}"
@@ -148,17 +144,17 @@ class RealWebSocket(
 
     val webSocketClient =
       client.newBuilder()
-        .eventListener(EventListener.NONE)
-        .protocols(ONLY_HTTP1)
-        .build()
+      .eventListener(EventListener.NONE)
+      .protocols(ONLY_HTTP1)
+      .build()
     val request =
       originalRequest.newBuilder()
-        .header("Upgrade", "websocket")
-        .header("Connection", "Upgrade")
-        .header("Sec-WebSocket-Key", key)
-        .header("Sec-WebSocket-Version", "13")
-        .header("Sec-WebSocket-Extensions", "permessage-deflate")
-        .build()
+      .header("Upgrade", "websocket")
+      .header("Connection", "Upgrade")
+      .header("Sec-WebSocket-Key", key)
+      .header("Sec-WebSocket-Version", "13")
+      .header("Sec-WebSocket-Extensions", "permessage-deflate")
+      .build()
     call = RealCall(webSocketClient, request, forWebSocket = true)
     call!!.enqueue(
       object : Callback {
@@ -183,7 +179,7 @@ class RealWebSocket(
           val extensions = WebSocketExtensions.parse(response.headers)
           this@RealWebSocket.extensions = extensions
           if (!extensions.isValid()) {
-            synchronized(this@RealWebSocket) {
+            lock.withLock {
               messageAndCloseQueue.clear() // Don't transmit any messages.
               close(1010, "unexpected Sec-WebSocket-Extensions in response header")
             }
@@ -262,17 +258,17 @@ class RealWebSocket(
     streams: Streams,
   ) {
     val extensions = this.extensions!!
-    synchronized(this) {
+    lock.withLock {
       this.name = name
       this.streams = streams
       this.writer =
         WebSocketWriter(
-          isClient = streams.client,
-          sink = streams.sink,
-          random = random,
-          perMessageDeflate = extensions.perMessageDeflate,
-          noContextTakeover = extensions.noContextTakeover(streams.client),
-          minimumDeflateSize = minimumDeflateSize,
+        isClient = streams.client,
+        sink = streams.sink,
+        random = random,
+        perMessageDeflate = extensions.perMessageDeflate,
+        noContextTakeover = extensions.noContextTakeover(streams.client),
+        minimumDeflateSize = minimumDeflateSize,
         )
       this.writerTask = WriterTask()
       if (pingIntervalMillis != 0L) {
@@ -289,11 +285,11 @@ class RealWebSocket(
 
     reader =
       WebSocketReader(
-        isClient = streams.client,
-        source = streams.source,
-        frameCallback = this,
-        perMessageDeflate = extensions.perMessageDeflate,
-        noContextTakeover = extensions.noContextTakeover(!streams.client),
+      isClient = streams.client,
+      source = streams.source,
+      frameCallback = this,
+      perMessageDeflate = extensions.perMessageDeflate,
+      noContextTakeover = extensions.noContextTakeover(!streams.client),
       )
   }
 
@@ -338,7 +334,7 @@ class RealWebSocket(
     val reason: String?
     var streamsToClose: Streams?
     var readerToClose: WebSocketReader?
-    synchronized(this) {
+    lock.withLock {
       failed = this.failed
       code = receivedCloseCode
       reason = receivedCloseReason
@@ -418,7 +414,7 @@ class RealWebSocket(
   ) {
     require(code != -1)
 
-    synchronized(this) {
+    lock.withLock {
       check(receivedCloseCode == -1) { "already closed" }
       receivedCloseCode = code
       receivedCloseReason = reason
@@ -437,10 +433,10 @@ class RealWebSocket(
     return send(bytes, OPCODE_BINARY)
   }
 
-  @Synchronized private fun send(
+  private fun send(
     data: ByteString,
     formatOpcode: Int,
-  ): Boolean {
+  ): Boolean = lock.withLock {
     // Don't send new frames after we've failed or enqueued a close frame.
     if (failed || enqueuedClose) return false
 
@@ -473,11 +469,11 @@ class RealWebSocket(
     return close(code, reason, webSocketCloseTimeout)
   }
 
-  @Synchronized fun close(
+  fun close(
     code: Int,
     reason: String?,
     cancelAfterCloseMillis: Long,
-  ): Boolean {
+  ): Boolean = lock.withLock {
     validateCloseCode(code)
 
     var reasonBytes: ByteString? = null
@@ -531,7 +527,7 @@ class RealWebSocket(
     var streamsToClose: Streams? = null
     var writerToClose: WebSocketWriter? = null
 
-    synchronized(this@RealWebSocket) {
+    lock.withLock {
       if (failed) {
         return false // Failed web socket.
       }
@@ -571,7 +567,7 @@ class RealWebSocket(
       } else if (messageOrClose is Message) {
         val message = messageOrClose as Message
         writer!!.writeMessageFrame(message.formatOpcode, message.data)
-        synchronized(this) {
+        lock.withLock {
           queueSize -= message.data.size.toLong()
         }
       } else if (messageOrClose is Close) {
@@ -596,7 +592,7 @@ class RealWebSocket(
   internal fun writePingFrame() {
     val writer: WebSocketWriter
     val failedPing: Int
-    synchronized(this) {
+    lock.withLock {
       if (failed) return
       writer = this.writer ?: return
       failedPing = if (awaitingPong) sentPingCount else -1
@@ -631,7 +627,7 @@ class RealWebSocket(
     val streamsToCancel: Streams?
     val streamsToClose: Streams?
     val writerToClose: WebSocketWriter?
-    synchronized(this) {
+    lock.withLock {
       if (failed) return // Already failed.
       failed = true
 

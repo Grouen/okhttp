@@ -19,11 +19,9 @@ import java.io.EOFException
 import java.io.IOException
 import java.net.ProtocolException
 import java.util.concurrent.TimeUnit.MILLISECONDS
-import okhttp3.Headers
-import okhttp3.HttpUrl
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
+import okhttp3.*
 import okhttp3.internal.EMPTY_HEADERS
 import okhttp3.internal.checkOffsetAndCount
 import okhttp3.internal.discard
@@ -312,6 +310,7 @@ class Http1ExchangeCodec(
   private inner class ChunkedSink : Sink {
     private val timeout = ForwardingTimeout(sink.timeout())
     private var closed: Boolean = false
+    private val lock = ReentrantLock()
 
     override fun timeout(): Timeout = timeout
 
@@ -328,14 +327,12 @@ class Http1ExchangeCodec(
       sink.writeUtf8("\r\n")
     }
 
-    @Synchronized
-    override fun flush() {
+    override fun flush() = lock.withLock {
       if (closed) return // Don't throw; this stream might have been closed on the caller's behalf.
       sink.flush()
     }
 
-    @Synchronized
-    override fun close() {
+    override fun close() = lock.withLock {
       if (closed) return
       closed = true
       sink.writeUtf8("0\r\n\r\n")

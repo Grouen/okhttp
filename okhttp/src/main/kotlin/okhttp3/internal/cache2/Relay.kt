@@ -18,8 +18,9 @@ package okhttp3.internal.cache2
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import okhttp3.internal.closeQuietly
-import okhttp3.internal.notifyAll
 import okio.Buffer
 import okio.ByteString
 import okio.ByteString.Companion.encodeUtf8
@@ -88,6 +89,9 @@ class Relay private constructor(
   val isClosed: Boolean
     get() = file == null
 
+  private val lock = ReentrantLock()
+  private val condition = lock.newCondition()
+
   @Throws(IOException::class)
   private fun writeHeader(
     prefix: ByteString,
@@ -126,7 +130,7 @@ class Relay private constructor(
     file!!.channel.force(false)
 
     // This file is complete.
-    synchronized(this@Relay) {
+    lock.withLock {
       complete = true
     }
 
@@ -142,7 +146,7 @@ class Relay private constructor(
    * building a new relay with [.read].
    */
   fun newSource(): Source? {
-    synchronized(this@Relay) {
+    lock.withLock {
       if (file == null) return null
       sourceCount++
     }
@@ -188,7 +192,7 @@ class Relay private constructor(
       check(fileOperator != null)
 
       val source: Int =
-        synchronized(this@Relay) {
+        lock.withLock {
           // We need new data from upstream.
           while (true) {
             val upstreamPos = this@Relay.upstreamPos
@@ -199,20 +203,20 @@ class Relay private constructor(
 
             // Another thread is already reading. Wait for that.
             if (upstreamReader != null) {
-              timeout.waitUntilNotified(this@Relay)
+              timeout.awaitSignal(condition)
               continue
             }
 
             // We will do the read.
             upstreamReader = Thread.currentThread()
-            return@synchronized SOURCE_UPSTREAM
+            return@withLock SOURCE_UPSTREAM
           }
 
           val bufferPos = upstreamPos - buffer.size
 
           // Bytes of the read precede the buffer. Read from the file.
           if (sourcePos < bufferPos) {
-            return@synchronized SOURCE_FILE
+            return@withLock SOURCE_FILE
           }
 
           // The buffer has the data we need. Read from there and return immediately.
@@ -253,7 +257,7 @@ class Relay private constructor(
           upstreamBytesRead,
         )
 
-        synchronized(this@Relay) {
+        lock.withLock {
           // Append new upstream bytes into the buffer. Trim it to its max size.
           buffer.write(upstreamBuffer, upstreamBytesRead)
           if (buffer.size > bufferMaxSize) {
@@ -266,9 +270,9 @@ class Relay private constructor(
 
         return bytesRead
       } finally {
-        synchronized(this@Relay) {
+        lock.withLock {
           upstreamReader = null
-          this@Relay.notifyAll()
+          condition.signalAll()
         }
       }
     }
@@ -281,7 +285,7 @@ class Relay private constructor(
       fileOperator = null
 
       var fileToClose: RandomAccessFile? = null
-      synchronized(this@Relay) {
+      lock.withLock {
         sourceCount--
         if (sourceCount == 0) {
           fileToClose = file
